@@ -1,0 +1,47 @@
+llm:
+  provider: "openai_compatible"
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: "deepseek-v4-flash"
+  base_url: "https://api.deepseek.com"
+  stream_mode: True # LLM 流式输出开关
+
+tts:
+  provider: "gpt_sovits"
+  stream_mode: True # TTS 流式合成开关（流式可打断，非流式不可）
+  gpt_sovits:
+    api_url: "http://localhost:9880"
+    text_lang: "zh"
+    # 参考音频相对sovits的目录
+    ref_audio_path: "output/ref_wav/ref.wav"
+    # 参考音频的原文
+    prompt_text: "あちらを向いていて頂けますかはぁ…覗きばかりしてると…"
+    # 参考音频的语种
+    prompt_lang: "ja"
+    # gpt-sovits 服务自启动配置
+    server_dir: "D:/models/GPT-SoVITS-v2pro-20250604-nvidia50"
+    server_cmd: "runtime/python.exe api_v2.py -a 127.0.0.1 -p 9880"
+
+asr:
+  # 音频输入采样率，与 TTS 输出采样率独立配置，16000 适配 paraformer-zh
+  sample_rate: 16000
+  # True=说话可打断当前播放; False=播放完毕才开始录下一段
+  interrupt_mode: True
+  # RMS 阈值，低于此值视为静音（根据麦克风灵敏度调整）
+  energy_threshold: 0.006
+  # 控制静音0.5s后视为一句话
+  silence_duration: 0.5
+  # 控制每句话包括上一句话最后0.3s（防止意外截断开头）
+  pre_speech_duration: 0.3
+  # 最短有效语音（秒），低于这个时长视为无效语音
+  min_utterance_duration: 0.5
+
+character:
+  name: "Zero"
+  personality_file: "data/characters/default.yaml"
+  memory_file: "data/memory.json"
+  max_history: 20
+
+gui:
+  # 这里是测试用的gui，后续换成新的
+  width: 800
+  height: 600
