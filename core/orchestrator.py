@@ -10,10 +10,10 @@ from asr.audio_capture import AudioCapture
 from asr.paraformer.recognizer import ASR
 from core.config import load_config
 from core.events import SENTINEL, PLAYBACK_DONE, State
+from core.turn_controller import InterruptTurnController, NonInterruptTurnController
 from dialogue.manager import DialogueManager
 from llm.client import LLMClient
 from tts.engine import TTSEngine
-from tts.launcher import TTSLauncher
 
 
 class Orchestrator:
@@ -44,15 +44,6 @@ class Orchestrator:
         self.llm = LLMClient.from_config(self.llm_queue, self.response_queue)
         self.tts = TTSEngine.from_config(self.tts_queue, self.audio_out_queue)
 
-        self.tts_launcher: TTSLauncher | None = None
-        tts_cfg = config.get("tts", {}).get("gpt_sovits", {})
-        if tts_cfg.get("server_dir") and tts_cfg.get("server_cmd"):
-            self.tts_launcher = TTSLauncher(
-                server_dir=tts_cfg["server_dir"],
-                server_cmd=tts_cfg["server_cmd"],
-                api_url=tts_cfg.get("api_url", "http://localhost:9880"),
-            )
-
         self.dialogue = DialogueManager(
             personality_path=config["character"].get("personality_file", "data/characters/default.yaml"),
             memory_path=config["character"].get("memory_file", "data/memory.json"),
@@ -63,25 +54,20 @@ class Orchestrator:
         self.asr.on_speech_end = lambda: self.state_queue.put(State.THINKING)
 
         self._interrupt_mode = asr_cfg.get("interrupt_mode", True)
+        self._turn = (
+            InterruptTurnController() if self._interrupt_mode
+            else NonInterruptTurnController()
+        )
         self._sample_rate = self.tts.sample_rate
 
+        self._active_gen = 0  # 当前有效代际，打断时递增，播放循环用于丢弃旧音频块
         self._playback_thread: threading.Thread | None = None
         self._dispatch_thread: threading.Thread | None = None
         self._running = False
 
-        # 非打断模式：播放完毕信号 + 是否需恢复麦克风
-        self._playback_done = threading.Event()
-        self._greeting_done = threading.Event()  # 开场白专用，不与 dispatch 的 _playback_done 混淆
-        self._mic_paused = False
-
     def start(self) -> None:
         self._running = True
 
-        if self.tts_launcher is not None:
-            try:
-                self.tts_launcher.start()
-            except (RuntimeError, TimeoutError) as e:
-                print(f"[Orchestrator] TTS server failed to start: {e}")
         self.tts.setup()
 
         self.asr.start()
@@ -108,16 +94,11 @@ class Orchestrator:
             return
         print("[Orchestrator] Stopping...")
         self._running = False
-        self._playback_done.set()
-        self._greeting_done.set()
 
         self.audio_capture.stop()
         self.asr.stop()
         self.llm.stop()
         self.tts.stop()
-
-        if self.tts_launcher is not None:
-            self.tts_launcher.stop()
 
         for q in [self.audio_queue, self.text_queue, self.llm_queue,
                    self.response_queue, self.tts_queue, self.audio_out_queue]:
@@ -125,6 +106,8 @@ class Orchestrator:
                 q.put_nowait(SENTINEL)
             except queue.Full:
                 pass
+
+        self._turn.shutdown()
 
         if self._playback_thread is not None:
             self._playback_thread.join(timeout=3.0)
@@ -148,8 +131,14 @@ class Orchestrator:
                     break
                 if chunk is PLAYBACK_DONE:
                     speaking = False
-                    self._on_playback_done()
+                    self._turn.on_playback_done(self)
                     continue
+                # 带 gen_id 标记的音频元组：(gen, audio)，丢弃旧代际
+                if isinstance(chunk, tuple):
+                    gen, audio = chunk
+                    if gen < self._active_gen:
+                        continue
+                    chunk = audio
                 if not speaking:
                     speaking = True
                     self.state_queue.put(State.SPEAKING)
@@ -168,9 +157,7 @@ class Orchestrator:
                     pass
 
     def _dispatch_loop(self) -> None:
-        # 非打断模式：等开场白播完再处理用户语音，避免时序冲突
-        if not self._interrupt_mode:
-            self._greeting_done.wait(timeout=30.0)
+        self._turn.before_dispatch(self)
 
         while self._running:
             try:
@@ -180,10 +167,7 @@ class Orchestrator:
             if text is SENTINEL:
                 break
 
-            if self._interrupt_mode:
-                self._interrupt_current_turn()
-            else:
-                self._pause_mic_for_turn()
+            self._turn.on_new_input(self)
 
             self.display_queue.put(("user", text))
             self.dialogue.add_user(text)
@@ -225,42 +209,7 @@ class Orchestrator:
                 self.llm.cancel()
                 self._drain_response_queue()
 
-            self._wait_for_playback_if_needed()
-
-    def _interrupt_current_turn(self) -> None:
-        """打断模式：取消旧 TTS 和 LLM，排空残留数据。"""
-        self.tts.cancel()
-        self.llm.cancel()
-        self._drain_audio_out_queue()
-        self._drain_response_queue()
-
-    def _pause_mic_for_turn(self) -> None:
-        """非打断模式：停麦、排空队列、重置 VAD，防止新旧语音混合。"""
-        self.audio_capture.stop()
-        self._mic_paused = True
-        self._drain_audio_queue()
-        self.asr.reset_vad()
-        self._drain_text_queue()
-
-    def _wait_for_playback_if_needed(self) -> None:
-        """非打断模式：等待本轮 TTS 播放完毕。"""
-        if not self._interrupt_mode:
-            self._playback_done.clear()
-            self._playback_done.wait(timeout=60.0)
-
-    def _on_playback_done(self) -> None:
-        """播放完毕：切 IDLE，非打断模式下通知 dispatch 并恢复麦克风。"""
-        self.state_queue.put(State.IDLE)
-        if not self._interrupt_mode:
-            time.sleep(0.5)
-            self._playback_done.set()
-            self._greeting_done.set()
-            if self._mic_paused:
-                try:
-                    self.audio_capture.start()
-                    self._mic_paused = False
-                except Exception as e:
-                    print(f"[Orchestrator] 麦克风重启失败: {e}")
+            self._turn.after_dispatch(self)
 
     def _put_tts(self, text: str) -> None:
         try:

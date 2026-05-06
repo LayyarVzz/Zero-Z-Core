@@ -6,7 +6,7 @@ import threading
 from core.events import SENTINEL, PLAYBACK_DONE
 from core.config import load_config
 from tts.base import TTSProvider
-from tts.providers.gpt_sovits import GPTSovitsProvider
+from tts.providers import create_provider
 
 
 class TTSEngine:
@@ -45,22 +45,9 @@ class TTSEngine:
     def from_config(
         cls, tts_queue: queue.Queue, audio_out_queue: queue.Queue
     ) -> "TTSEngine":
-        """工厂方法：从 config.yaml 读取 TTS 配置 -> 构造 Provider -> 构造本引擎。"""
+        """工厂方法：从 config.yaml 读取 TTS 配置 -> 创建 Provider -> 构造引擎。"""
         config = load_config()["tts"]
-        provider_name = config["provider"]  # 配置中指定用哪个 Provider
-
-        if provider_name == "gpt_sovits":
-            cfg = config.get("gpt_sovits", {})
-            provider = GPTSovitsProvider(
-                api_url=cfg["api_url"],
-                ref_audio_path=cfg["ref_audio_path"],
-                prompt_text=cfg["prompt_text"],
-                prompt_lang=cfg["prompt_lang"],
-                text_lang=cfg["text_lang"],
-            )
-        else:
-            raise ValueError(f"Unsupported TTS provider: {provider_name}")
-
+        provider = create_provider(config)
         stream_mode = config.get("stream_mode", True)
         return cls(tts_queue, audio_out_queue, provider, stream_mode=stream_mode)
 
@@ -86,12 +73,12 @@ class TTSEngine:
                     for chunk in self.provider.synthesize_stream(text):
                         if gen != self._gen_id:
                             break
-                        self.audio_out_queue.put(chunk)
+                        self.audio_out_queue.put((gen, chunk))
                     if gen == self._gen_id:
                         self.audio_out_queue.put(PLAYBACK_DONE)
                 else:
                     audio = self.provider.synthesize(text)
-                    self.audio_out_queue.put(audio)
+                    self.audio_out_queue.put((self._gen_id, audio))
                     self.audio_out_queue.put(PLAYBACK_DONE)
             except Exception as e:
                 print(f"[TTSEngine] TTS failed: {e}")

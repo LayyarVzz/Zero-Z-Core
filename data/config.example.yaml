@@ -1,0 +1,46 @@
+# 复制此文件为 data/config.yaml 并修改为你的本地配置
+
+llm:
+  provider: "openai_compatible"
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: "deepseek-v4-flash"
+  base_url: "https://api.deepseek.com"
+  stream_mode: True
+
+tts:
+  provider: "gpt_sovits"
+  stream_mode: True
+  gpt_sovits:
+    api_url: "http://localhost:9880"
+    text_lang: "zh"
+    ref_audio_path: "voice/gpt_sovits/ref.wav"
+    prompt_text: "参考音频对应的文本内容"
+    prompt_lang: "zh"
+  minimax:
+    base_url: "https://api.minimaxi.com"
+    api_key: "${MINIMAX_API_KEY}"
+    model: "speech-2.8-hd"
+    voice_id: "male-qn-qingse"
+    speed: 1.0
+    vol: 1.0
+    pitch: 0
+    sample_rate: 32000
+    format: "pcm"
+
+asr:
+  sample_rate: 16000
+  interrupt_mode: True
+  energy_threshold: 0.006
+  silence_duration: 0.8
+  pre_speech_duration: 0.3
+  min_utterance_duration: 0.5
+
+character:
+  name: "Zero"
+  personality_file: "data/characters/default.yaml"
+  memory_file: "data/memory.json"
+  max_history: 20
+
+gui:
+  width: 800
+  height: 600
