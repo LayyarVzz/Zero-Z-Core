@@ -28,18 +28,28 @@ tts:
     format: "pcm"
 
 asr:
+  provider: "paraformer"
   sample_rate: 16000
   interrupt_mode: True
   energy_threshold: 0.006
   silence_duration: 0.8
   pre_speech_duration: 0.3
   min_utterance_duration: 0.5
+  paraformer:
+    model: "paraformer-zh"
+    vad_model: "fsmn-vad"
+    punc_model: "ct-punc"
 
 character:
-  name: "Zero"
-  personality_file: "data/characters/default.yaml"
-  memory_file: "data/memory.json"
+  name: "zero"
   max_history: 20
+  memory:
+    enabled: true
+    embedding_model: "text-embedding-v3"
+    embedding_api_key: "${DASHSCOPE_API_KEY}"
+    embedding_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qdrant_url: "http://localhost:6333"
+    max_entries: 100
 
 gui:
   width: 800

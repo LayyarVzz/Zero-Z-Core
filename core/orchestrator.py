@@ -7,11 +7,12 @@ import time
 import sounddevice as sd
 
 from asr.audio_capture import AudioCapture
-from asr.paraformer.recognizer import ASR
+from asr.recognizer import ASREngine
 from core.config import load_config
 from core.events import SENTINEL, PLAYBACK_DONE, State
 from core.turn_controller import InterruptTurnController, NonInterruptTurnController
 from dialogue.manager import DialogueManager
+from dialogue.memory import LongTermMemory, NoopMemory
 from llm.client import LLMClient
 from tts.engine import TTSEngine
 
@@ -33,21 +34,41 @@ class Orchestrator:
         self.display_queue: queue.Queue = queue.Queue()
 
         self.audio_capture = AudioCapture(self.audio_queue, sample_rate=asr_cfg["sample_rate"])
-        self.asr = ASR(
-            self.audio_queue, self.text_queue,
-            sample_rate=asr_cfg["sample_rate"],
-            energy_threshold=asr_cfg["energy_threshold"],
-            silence_duration=asr_cfg["silence_duration"],
-            pre_speech_duration=asr_cfg["pre_speech_duration"],
-            min_utterance_duration=asr_cfg["min_utterance_duration"],
-        )
+        self.asr = ASREngine.from_config(self.audio_queue, self.text_queue)
         self.llm = LLMClient.from_config(self.llm_queue, self.response_queue)
         self.tts = TTSEngine.from_config(self.tts_queue, self.audio_out_queue)
 
+        char_cfg = config["character"]
+        mem_cfg = char_cfg.get("memory", {})
+        llm_cfg = config["llm"]
+
+        char_name = char_cfg["name"]
+        card_path = f"data/characters/{char_name}/card.json"
+
+        if mem_cfg.get("enabled", True):
+            try:
+                memory = LongTermMemory(
+                    llm_base_url=llm_cfg["base_url"],
+                    llm_api_key=llm_cfg["api_key"],
+                    llm_model=llm_cfg["model"],
+                    embedding_api_key=mem_cfg["embedding_api_key"],
+                    embedding_base_url=mem_cfg["embedding_base_url"],
+                    embedding_model=mem_cfg.get("embedding_model", "text-embedding-v4"),
+                    qdrant_url=mem_cfg.get("qdrant_url", "http://localhost:6333"),
+                    collection_name=f"memories_{char_name}",
+                    max_entries=mem_cfg.get("max_entries", 100),
+                )
+            except Exception:
+                print("[WARNING] Qdrant 未启动，长期记忆功能已禁用。启动 Qdrant: docker compose up -d")
+                memory = NoopMemory()
+        else:
+            print("[INFO] 长期记忆功能已关闭（memory.enabled = false）")
+            memory = NoopMemory()
+
         self.dialogue = DialogueManager(
-            personality_path=config["character"].get("personality_file", "data/characters/default.yaml"),
-            memory_path=config["character"].get("memory_file", "data/memory.json"),
-            max_history=config["character"].get("max_history", 20),
+            card_path=card_path,
+            memory=memory,
+            max_history=char_cfg.get("max_history", 20),
         )
 
         self.asr.on_speech_start = lambda: self.state_queue.put(State.LISTENING)
@@ -201,6 +222,7 @@ class Orchestrator:
                 continue
 
             self.dialogue.add_assistant(full_response)
+            self.dialogue.remember_last_exchange()
             self.display_queue.put(("ai", full_response))
             print(f"[LLM] {full_response}")
             self._put_tts(full_response)

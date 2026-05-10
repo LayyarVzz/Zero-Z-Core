@@ -75,11 +75,12 @@ class MinimaxProvider(TTSProvider):
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """流式合成：POST stream=True → 逐行解析 SSE → yield PCM int16。
 
-        MiniMax SSE 返回累积音频（每次 data 事件含完整音频），需切出增量部分。
+        MiniMax SSE 返回增量音频（每个 data 事件含新生成的音频片段）。
+        status=1 为增量 chunk，status=2 为最终完整音频，只取增量部分。
         """
         self._cancel_flag = False
         payload = self._build_payload(text, stream=True)
-        yielded_samples = 0  # 已产出的采样点数，用于从累积音频中切增量
+        first_chunk = True  # 首个有效音频块做前导静音裁剪，避免模型启动时的噪点
 
         with httpx.Client(
             timeout=self._timeout,
@@ -105,13 +106,19 @@ class MinimaxProvider(TTSProvider):
                         data = json.loads(json_str)
                     except Exception:
                         continue
-                    audio_b64 = data.get("data", {}).get("audio", "")
+                    d = data.get("data", {})
+                    # status=2 是最终完整音频（包含之前所有增量），跳过避免重复
+                    if d.get("status") == 2:
+                        continue
+                    audio_b64 = d.get("audio", "")
                     if audio_b64:
-                        full_audio = self._decode_audio(audio_b64)
-                        if len(full_audio) > yielded_samples:
-                            chunk = full_audio[yielded_samples:]
-                            yielded_samples = len(full_audio)
-                            yield chunk
+                        audio = self._decode_audio(audio_b64)
+                        if len(audio) > 0:
+                            if first_chunk:
+                                first_chunk = False
+                                audio = self._trim_leading_silence(audio)
+                            if len(audio) > 0:
+                                yield audio
 
     def synthesize(self, text: str) -> np.ndarray:
         """非流式合成：POST stream=False → JSON 响应 → 返回完整 PCM int16。"""
@@ -170,6 +177,17 @@ class MinimaxProvider(TTSProvider):
             # mp3 / wav / flac 格式 → soundfile 解码
             samples, _ = sf.read(io.BytesIO(raw), dtype="int16")
             return samples
+
+    @staticmethod
+    def _trim_leading_silence(audio: "np.ndarray", threshold: int = 200) -> "np.ndarray":
+        """裁剪前导静音/噪点，找到首个振幅超阈值的采样点。"""
+        mask = np.abs(audio) > threshold
+        idx = np.argmax(mask)
+        if idx == 0 and not mask[0]:
+            return audio  # 全为静音，不裁剪
+        # 保留裁剪点前 3200 个采样点（100ms @ 32kHz）避免截断起始辅音
+        start = max(0, idx - 3200)
+        return audio[start:]
 
     def _handle_error(self, response: httpx.Response) -> None:
         try:
