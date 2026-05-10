@@ -12,16 +12,3 @@ wheels/
 # Environment / local config
 .env
 data/config.yaml
-
-# Superpowers
-.superpowers/
-docs
-
-# code-qa
-code-qa
-
-scripts
-voice
-
-.claude
-CLAUDE.md
