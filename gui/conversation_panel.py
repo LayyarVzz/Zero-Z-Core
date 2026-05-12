@@ -29,7 +29,7 @@ class ConversationPanel(QWidget):
         self.message_layout = QVBoxLayout(self.message_container)
         self.message_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.message_layout.setSpacing(8)  # 消息间距
-        self.message_layout.addStretch()   # 底部弹簧，消息少时不铺满
+        self.message_layout.addStretch()  # 底部弹簧，消息少时不铺满
 
         self.scroll_area.setWidget(self.message_container)
         layout.addWidget(self.scroll_area)

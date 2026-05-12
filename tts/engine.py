@@ -70,15 +70,18 @@ class TTSEngine:
             try:
                 if self.stream_mode:
                     gen = self._gen_id
+                    first = True
                     for chunk in self.provider.synthesize_stream(text):
                         if gen != self._gen_id:
                             break
-                        self.audio_out_queue.put((gen, chunk))
+                        chunk_text = text if first else ""
+                        self.audio_out_queue.put((gen, (chunk_text, chunk)))
+                        first = False
                     if gen == self._gen_id:
                         self.audio_out_queue.put(PLAYBACK_DONE)
                 else:
                     audio = self.provider.synthesize(text)
-                    self.audio_out_queue.put((self._gen_id, audio))
+                    self.audio_out_queue.put((self._gen_id, (text, audio)))
                     self.audio_out_queue.put(PLAYBACK_DONE)
             except Exception as e:
                 print(f"[TTSEngine] TTS failed: {e}")
