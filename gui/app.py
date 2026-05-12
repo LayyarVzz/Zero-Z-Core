@@ -11,11 +11,10 @@ from PySide6.QtCore import Qt
 from core.config import load_config
 from core.orchestrator import Orchestrator
 from asr.audio_capture import AudioCapture
-from gui.pet_window import PetWindow
+from gui.live2d_widget import Live2DWidget
 from gui.tray import TrayIcon
 from gui.state_bridge import StateBridge
 from gui.audio_player import AudioPlayer
-from gui.subtitle import Subtitle
 from core.events import State
 
 
@@ -37,16 +36,14 @@ class AppController:
 
         print(f"[Zero-Z] 启动完成 (角色: {config['character']['name']})")
 
-        self.window = PetWindow(
+        self.window = Live2DWidget(
             model_path=gui_cfg.get("model_path", ""),
             width=gui_cfg.get("width", 400),
             height=gui_cfg.get("height", 600),
         )
+        self._position_bottom_right()
 
         self.player = AudioPlayer(sample_rate=self.orch._sample_rate)
-
-        self.subtitle = Subtitle(self.window)
-        self.subtitle.setGeometry(0, 10, self.window.width(), 60)
 
         self.bridge = StateBridge(self.orch)
         self._setup_bridge()
@@ -61,25 +58,27 @@ class AppController:
         if app:
             app.aboutToQuit.connect(self.cleanup)
 
+    def _position_bottom_right(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            self.window.move(
+                geo.right() - self.window.width() - 20,
+                geo.bottom() - self.window.height() - 20,
+            )
+
     def _setup_bridge(self) -> None:
         bridge = self.bridge
         player = self.player
-        subtitle = self.subtitle
-        live2d = self.window.live2d
+        window = self.window
 
         bridge.state_changed.connect(lambda s: print(f"[State] {s}"))
-        bridge.state_changed.connect(lambda s: live2d.set_breath(s != State.SPEAKING))
-
-        bridge.llm_text.connect(
-            lambda text, partial: subtitle.append_text(text, partial)
-        )
-
-        bridge.asr_text.connect(lambda text: subtitle.clear_text())
+        bridge.state_changed.connect(lambda s: window.set_breath(s != State.SPEAKING))
 
         bridge.audio_chunk.connect(player.play_chunk)
-        player.mouth_open_changed.connect(live2d.set_mouth_open)
+        player.mouth_open_changed.connect(window.set_mouth_open)
 
-        player.playback_finished.connect(lambda: live2d.set_mouth_open(0.0))
+        player.playback_finished.connect(lambda: window.set_mouth_open(0.0))
 
     def cleanup(self) -> None:
         self.capture.stop()
@@ -92,7 +91,6 @@ def run_gui() -> int:
     if sys.platform == "win32":
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("zero.z.core")
 
-    # 捕获所有未处理异常，避免 Qt 静默吞掉
     def _excepthook(cls, exc, tb):
         traceback.print_exception(cls, exc, tb)
         sys.exit(1)
