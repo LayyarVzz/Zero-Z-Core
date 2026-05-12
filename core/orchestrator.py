@@ -4,12 +4,9 @@ import queue
 import threading
 import time
 
-import sounddevice as sd
-
-from asr.audio_capture import AudioCapture
 from asr.recognizer import ASREngine
 from core.config import load_config
-from core.events import SENTINEL, PLAYBACK_DONE, State
+from core.events import SENTINEL, State
 from core.turn_controller import InterruptTurnController, NonInterruptTurnController
 from dialogue.manager import DialogueManager
 from dialogue.memory import LongTermMemory, NoopMemory
@@ -33,7 +30,7 @@ class Orchestrator:
         self.state_queue: queue.Queue = queue.Queue()
         self.display_queue: queue.Queue = queue.Queue()
 
-        self.audio_capture = AudioCapture(self.audio_queue, sample_rate=asr_cfg["sample_rate"])
+        # AudioCapture 已移除，音频通过 ws_server feed 到 audio_queue
         self.asr = ASREngine.from_config(self.audio_queue, self.text_queue)
         self.llm = LLMClient.from_config(self.llm_queue, self.response_queue)
         self.tts = TTSEngine.from_config(self.tts_queue, self.audio_out_queue)
@@ -92,12 +89,11 @@ class Orchestrator:
         self.tts.setup()
 
         self.asr.start()
-        self.audio_capture.start()
+        # AudioCapture 已移除，音频由 ws_server 注入
         self.llm.start()
         self.tts.start()
 
-        self._playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
-        self._playback_thread.start()
+        self._playback_thread = None
 
         self._dispatch_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
         self._dispatch_thread.start()
@@ -116,7 +112,6 @@ class Orchestrator:
         print("[Orchestrator] Stopping...")
         self._running = False
 
-        self.audio_capture.stop()
         self.asr.stop()
         self.llm.stop()
         self.tts.stop()
@@ -137,45 +132,13 @@ class Orchestrator:
 
         print("[Orchestrator] Stopped")
 
-    def _playback_loop(self) -> None:
-        stream = None
-        try:
-            stream = sd.OutputStream(samplerate=self._sample_rate, channels=1, dtype="int16")
-            stream.start()
-            speaking = False
-            while self._running:
-                try:
-                    chunk = self.audio_out_queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                if chunk is SENTINEL:
-                    break
-                if chunk is PLAYBACK_DONE:
-                    speaking = False
-                    self._turn.on_playback_done(self)
-                    continue
-                # 带 gen_id 标记的音频元组：(gen, audio)，丢弃旧代际
-                if isinstance(chunk, tuple):
-                    gen, audio = chunk
-                    if gen < self._active_gen:
-                        continue
-                    chunk = audio
-                if not speaking:
-                    speaking = True
-                    self.state_queue.put(State.SPEAKING)
-                stream.write(chunk)
-        except Exception as e:
-            print(f"[Orchestrator] Playback error: {e}")
-        finally:
-            if stream is not None:
-                try:
-                    stream.stop()
-                except Exception:
-                    pass
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+    def cancel_current_turn(self) -> None:
+        """打断当前回合：递增 gen_id，取消 LLM 和 TTS，清空输出队列。"""
+        self._active_gen += 1
+        self.tts.cancel()
+        self.llm.cancel()
+        self._drain_audio_out_queue()
+        self._drain_response_queue()
 
     def _dispatch_loop(self) -> None:
         self._turn.before_dispatch(self)

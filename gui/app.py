@@ -1,117 +1,113 @@
-"""PySide6 主窗口与 GUI 启动入口。"""
+"""GUI 入口 — 创建 QApplication、Orchestrator、管道和主窗口。"""
 
-import queue
+import ctypes
+import io
+import sys
+import traceback
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QMainWindow, QHBoxLayout, QWidget, QApplication
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
 
+from core.config import load_config
+from core.orchestrator import Orchestrator
+from asr.audio_capture import AudioCapture
+from gui.pet_window import PetWindow
+from gui.tray import TrayIcon
+from gui.state_bridge import StateBridge
+from gui.audio_player import AudioPlayer
+from gui.subtitle import Subtitle
 from core.events import State
-from gui.live2d_widget import Live2DWidget
-from gui.conversation_panel import ConversationPanel
 
 
-class DigitalHumanApp(QMainWindow):
-    """虚拟数字人主窗口，左侧 Live2D 角色 + 右侧对话面板。
+class AppController:
+    """应用程序总控制器，连接所有模块的生命周期。"""
 
-    通过 QTimer 轮询 display_queue 和 state_queue，
-    将后端事件翻译为 UI 更新。
-    """
+    def __init__(self):
+        config = load_config()
+        gui_cfg = config.get("gui", {})
 
-    def __init__(
-        self,
-        display_queue: queue.Queue,
-        state_queue: queue.Queue | None = None,
-        title: str = "Zero-Z 虚拟数字人",
-        width: int = 800,
-        height: int = 600,
-    ):
-        super().__init__()
-        self.display_queue = display_queue  # 消息展示队列，生产者是编排器
-        self.state_queue = state_queue      # 状态同步队列（可选）
-
-        self.setWindowTitle(title)
-        self.resize(width, height)
-        self.setMinimumSize(600, 400)
-
-        # 水平布局：Live2D（左 3/5）+ 对话面板（右 2/5）
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.live2d = Live2DWidget()
-        layout.addWidget(self.live2d, stretch=3)
-
-        self.conversation = ConversationPanel()
-        layout.addWidget(self.conversation, stretch=2)
-
-        # 50ms 定时器轮询队列，将后端数据转到 UI 线程
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._poll_queues)
-        self._timer.start(50)
-
-        self._current_state = State.IDLE
-
-    def _poll_queues(self) -> None:
-        """每 50ms 触发一次：从队列取消息和状态，更新 UI。
-
-        使用 get_nowait() 非阻塞读取，队列为空直接跳过。
-        """
-        # 展示队列：(msg_type, text)  如 ("user", "你好")
+        # FunASR/modelscope 初始化时大量 print()，临时吞掉
+        _real_stdout = sys.stdout
+        sys.stdout = io.StringIO()
         try:
-            msg_type, text = self.display_queue.get_nowait()
-            if msg_type == "user":
-                self.conversation.add_user_message(text)
-            elif msg_type == "ai":
-                self.conversation.add_ai_message(text)
-        except queue.Empty:
-            pass
+            self.orch = Orchestrator()
+            self.orch.start()
+        finally:
+            sys.stdout = _real_stdout
 
-        # 状态队列：编排器主动推的状态变更
-        if self.state_queue is not None:
-            try:
-                state = self.state_queue.get_nowait()
-                self._set_state(state)
-            except queue.Empty:
-                pass
+        print(f"[Zero-Z] 启动完成 (角色: {config['character']['name']})")
 
-    def _set_state(self, state: State) -> None:
-        """更新角色动画状态，避免重复设置同一状态触发无谓重绘。"""
-        if state != self._current_state:
-            self._current_state = state
-            self.live2d.set_state(state)
+        self.window = PetWindow(
+            model_path=gui_cfg.get("model_path", ""),
+            width=gui_cfg.get("width", 400),
+            height=gui_cfg.get("height", 600),
+        )
 
-    def closeEvent(self, event) -> None:
-        """窗口关闭时停止定时器，避免在销毁后继续触发回调。"""
-        self._timer.stop()
-        super().closeEvent(event)
+        self.player = AudioPlayer(sample_rate=self.orch._sample_rate)
+
+        self.subtitle = Subtitle(self.window)
+        self.subtitle.setGeometry(0, 10, self.window.width(), 60)
+
+        self.bridge = StateBridge(self.orch)
+        self._setup_bridge()
+
+        self.capture = AudioCapture(self.orch.audio_queue)
+        self.capture.on_speech_detected = self.orch.cancel_current_turn
+        self.capture.start()
+
+        self.tray = TrayIcon(self.window)
+
+        app = QApplication.instance()
+        if app:
+            app.aboutToQuit.connect(self.cleanup)
+
+    def _setup_bridge(self) -> None:
+        bridge = self.bridge
+        player = self.player
+        subtitle = self.subtitle
+        live2d = self.window.live2d
+
+        bridge.state_changed.connect(lambda s: print(f"[State] {s}"))
+        bridge.state_changed.connect(lambda s: live2d.set_breath(s != State.SPEAKING))
+
+        bridge.llm_text.connect(
+            lambda text, partial: subtitle.append_text(text, partial)
+        )
+
+        bridge.asr_text.connect(lambda text: subtitle.clear_text())
+
+        bridge.audio_chunk.connect(player.play_chunk)
+        player.mouth_open_changed.connect(live2d.set_mouth_open)
+
+        player.playback_finished.connect(lambda: live2d.set_mouth_open(0.0))
+
+    def cleanup(self) -> None:
+        self.capture.stop()
+        self.player.stop()
+        self.bridge.stop()
+        self.orch.stop()
 
 
-def run_gui(
-    display_queue: queue.Queue,
-    state_queue: queue.Queue | None = None,
-) -> None:
-    """GUI 启动入口：创建 QApplication 和主窗口，进入事件循环。
+def run_gui() -> int:
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("zero.z.core")
 
-    阻塞直到窗口关闭，应在主线程调用。
-    """
-    import sys
+    # 捕获所有未处理异常，避免 Qt 静默吞掉
+    def _excepthook(cls, exc, tb):
+        traceback.print_exception(cls, exc, tb)
+        sys.exit(1)
+
+    sys.excepthook = _excepthook
 
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # 跨平台一致的现代风格
+    app.setQuitOnLastWindowClosed(False)
 
-    from core.config import load_config
+    controller = AppController()
+    controller.window.show()
+    controller.tray.show()
 
-    config = load_config()
-    gui_cfg = config.get("gui", {})
+    return app.exec()
 
-    window = DigitalHumanApp(
-        display_queue=display_queue,
-        state_queue=state_queue,
-        title=f"Zero-Z - {config.get('character', {}).get('name', '小零')}",
-        width=gui_cfg.get("width", 800),
-        height=gui_cfg.get("height", 600),
-    )
-    window.show()
-    app.exec()  # 进入 Qt 事件循环，阻塞直到窗口关闭
+
+if __name__ == "__main__":
+    sys.exit(run_gui())

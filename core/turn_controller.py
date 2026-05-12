@@ -68,11 +68,8 @@ class NonInterruptTurnController(TurnController):
     def __init__(self) -> None:
         self._playback_done = threading.Event()
         self._greeting_done = threading.Event()
-        self._mic_paused = False
 
     def on_new_input(self, orch) -> None:
-        orch.audio_capture.stop()
-        self._mic_paused = True
         orch._drain_audio_queue()
         orch.asr.reset_vad()
         orch._drain_text_queue()
@@ -82,12 +79,6 @@ class NonInterruptTurnController(TurnController):
         time.sleep(0.5)
         self._playback_done.set()
         self._greeting_done.set()
-        if self._mic_paused:
-            try:
-                orch.audio_capture.start()
-                self._mic_paused = False
-            except Exception as e:
-                print(f"[NonInterrupt] 麦克风重启失败: {e}")
 
     def before_dispatch(self, orch) -> None:
         self._greeting_done.wait(timeout=30.0)

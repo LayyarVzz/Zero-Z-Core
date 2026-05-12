@@ -5,11 +5,11 @@ llm:
   api_key: "${DEEPSEEK_API_KEY}"
   model: "deepseek-v4-flash"
   base_url: "https://api.deepseek.com"
-  stream_mode: True
+  stream_mode: True # LLM 流式输出开关
 
 tts:
-  provider: "gpt_sovits"
-  stream_mode: True
+  provider: "gpt_sovits"       # "minimax" 或 "gpt_sovits"
+  stream_mode: True             # TTS 流式合成开关（流式可打断，非流式不可）
   gpt_sovits:
     api_url: "http://localhost:9880"
     text_lang: "zh"
@@ -30,21 +30,21 @@ tts:
 asr:
   provider: "paraformer"
   sample_rate: 16000
-  interrupt_mode: True
-  energy_threshold: 0.006
-  silence_duration: 0.8
-  pre_speech_duration: 0.3
-  min_utterance_duration: 0.5
+  interrupt_mode: True          # True=可打断, False=等播放完才能说话
+  energy_threshold: 0.006       # RMS 能量阈值
+  silence_duration: 0.8         # 静音 N 秒后视为一句话结束
+  pre_speech_duration: 0.3      # 保留语音开始前 N 秒的音频
+  min_utterance_duration: 0.5   # 短于 N 秒的语音视为无效
   paraformer:
     model: "paraformer-zh"
     vad_model: "fsmn-vad"
     punc_model: "ct-punc"
 
 character:
-  name: "zero"
+  name: "zero"                  # 对应 data/characters/{name}/card.json
   max_history: 20
   memory:
-    enabled: true
+    enabled: true               # 长期记忆（需 Qdrant 运行中）
     embedding_model: "text-embedding-v3"
     embedding_api_key: "${DASHSCOPE_API_KEY}"
     embedding_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -52,5 +52,8 @@ character:
     max_entries: 100
 
 gui:
-  width: 800
+  model_path: "data/models/hiyori/Hiyori.model3.json"
+  width: 400
   height: 600
+  always_on_top: true
+  mouse_penetration: false
