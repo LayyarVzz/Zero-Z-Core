@@ -96,8 +96,6 @@ class ASREngine:
                 self.on_speech_start()
             if speech is not None:
                 self._transcribe_and_emit(speech)
-                if self.on_speech_end:
-                    self.on_speech_end()
 
         # 退出前处理最后半句话
         speech = self.vad.flush()
@@ -110,5 +108,7 @@ class ASREngine:
             if text:
                 print(f"[ASR] {text}")
                 self.text_queue.put(text)
+                if self.on_speech_end:
+                    self.on_speech_end()
         except Exception as e:
             print(f"[ASR] 模型推理失败: {e}")
