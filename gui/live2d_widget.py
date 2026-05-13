@@ -61,8 +61,16 @@ class Live2DWidget(QOpenGLWidget):
         self._click_x = 0
         self._click_y = 0
         self._system_scale = QGuiApplication.primaryScreen().devicePixelRatio()
+        self._alpha_rgba: bytes = b""
+        self._fw = 0
+        self._fh = 0
 
         self.resize(width, height)
+
+    def closeEvent(self, event) -> None:
+        hwnd = int(self.winId())
+        ctypes.windll.user32.SetWindowRgn(hwnd, 0, True)
+        super().closeEvent(event)
 
     def initializeGL(self) -> None:
         live2d.glInit()
@@ -90,18 +98,21 @@ class Live2DWidget(QOpenGLWidget):
 
         self.startTimer(int(1000 / 60))
         self._initialized = True
+        self._region_dirty = True
 
     def resizeGL(self, w: int, h: int) -> None:
         if self._model is not None and self._initialized:
             self._model.Resize(w, h)
         self._w = w
         self._h = h
+        self._region_dirty = True
 
     def paintGL(self) -> None:
         live2d.clearBuffer()
         if self._model is not None:
             self._model.Update()
             self._model.Draw()
+        self._update_alpha_mask()
 
     def timerEvent(self, _: QTimerEvent | None) -> None:
         self.update()
@@ -114,9 +125,9 @@ class Live2DWidget(QOpenGLWidget):
             if msg.message == WM_NCHITTEST:
                 pt_x = msg.lParam & 0xFFFF
                 pt_y = (msg.lParam >> 16) & 0xFFFF
-                widget_pt = self.mapFromGlobal(QPoint(pt_x, pt_y))
+                ratio = self._system_scale
+                widget_pt = self.mapFromGlobal(QPoint(int(pt_x / ratio), int(pt_y / ratio)))
                 opaque = self._is_pixel_opaque(widget_pt.x(), widget_pt.y())
-                print(f"[NCHITTEST] ({pt_x},{pt_y}) opaque={opaque}")
                 if opaque:
                     return True, HTCAPTION
                 else:
@@ -125,19 +136,89 @@ class Live2DWidget(QOpenGLWidget):
 
     # ── 像素检测 ──────────────────────────────────────────
 
+    def _update_alpha_mask(self) -> None:
+        self._system_scale = QGuiApplication.primaryScreen().devicePixelRatio()
+        ratio = self._system_scale
+        self._fw = int(self._w * ratio)
+        self._fh = int(self._h * ratio)
+        try:
+            raw = gl.glReadPixels(
+                0, 0, self._fw, self._fh, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE
+            )
+            self._alpha_rgba = raw if isinstance(raw, bytes) else b""
+        except Exception:
+            self._alpha_rgba = b""
+        if getattr(self, '_region_dirty', False):
+            self._region_dirty = False
+            self._update_window_region()
+
     def _is_pixel_opaque(self, wx: int, wy: int) -> bool:
-        if not self._initialized:
+        if not self._initialized or not self._alpha_rgba:
             return False
         ratio = self._system_scale
         pw = int(wx * ratio)
         ph = int(wy * ratio)
-        fw = int(self._w * ratio) if self._w else self.width()
-        fh = int(self._h * ratio) if self._h else self.height()
-        if pw < 0 or ph < 0 or pw >= fw or ph >= fh:
+        if pw < 0 or ph < 0 or pw >= self._fw or ph >= self._fh:
             return False
-        gl_y = fh - ph - 1
-        pixel = gl.glReadPixels(pw, gl_y, 1, 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
-        return pixel[3] > 10  # type: ignore[reportIndexIssue]
+        # OpenGL 原点在左下角，翻转 Y
+        gl_y = self._fh - ph - 1
+        idx = (gl_y * self._fw + pw) * 4 + 3  # alpha 字节偏移
+        return self._alpha_rgba[idx] > 10
+
+    def _update_window_region(self) -> None:
+        """从 alpha 掩码构建窗口区域，实现像素级鼠标穿透。"""
+        if not self._alpha_rgba:
+            return
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        hwnd = int(self.winId())
+
+        SCALE = 4
+        fw = self._fw
+        fh = self._fh
+        sw = fw // SCALE
+        sh = fh // SCALE
+        if sw == 0 or sh == 0:
+            return
+
+        RGN_OR = 2
+        hrgn = gdi32.CreateRectRgn(0, 0, 0, 0)
+
+        for r in range(sh):
+            col = 0
+            while col < sw:
+                # 跳过透明像素
+                while col < sw:
+                    gl_x = col * SCALE
+                    gl_y = fh - 1 - r * SCALE
+                    idx = (gl_y * fw + gl_x) * 4 + 3
+                    if self._alpha_rgba[idx] > 10:
+                        break
+                    col += 1
+                if col >= sw:
+                    break
+                start = col
+                # 找到不透明段末尾
+                while col < sw:
+                    gl_x = col * SCALE
+                    gl_y = fh - 1 - r * SCALE
+                    idx = (gl_y * fw + gl_x) * 4 + 3
+                    if self._alpha_rgba[idx] <= 10:
+                        break
+                    col += 1
+                end = col
+
+                x1 = start * SCALE
+                y1 = r * SCALE
+                x2 = min(end * SCALE, fw)
+                y2 = min((r + 1) * SCALE, fh)
+
+                rect = gdi32.CreateRectRgn(x1, y1, x2, y2)
+                gdi32.CombineRgn(hrgn, hrgn, rect, RGN_OR)
+                gdi32.DeleteObject(rect)
+
+        user32.SetWindowRgn(hwnd, hrgn, True)
 
     # ── 鼠标交互 ──────────────────────────────────────────
 
@@ -189,3 +270,12 @@ class Live2DWidget(QOpenGLWidget):
             self.hide()
         else:
             self.show()
+
+    def set_mouse_penetration(self, enable: bool) -> None:
+        flags = self.windowFlags()
+        if enable:
+            self.setWindowFlags(flags | Qt.WindowType.WindowTransparentForInput)
+        else:
+            self.setWindowFlags(flags & ~Qt.WindowType.WindowTransparentForInput)
+            self._region_dirty = True
+        self.show()
