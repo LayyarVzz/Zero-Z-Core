@@ -64,6 +64,7 @@ class Live2DWidget(QOpenGLWidget):
         self._alpha_rgba: bytes = b""
         self._fw = 0
         self._fh = 0
+        self._frame_count = 0
 
         self.resize(width, height)
 
@@ -112,7 +113,11 @@ class Live2DWidget(QOpenGLWidget):
         if self._model is not None:
             self._model.Update()
             self._model.Draw()
-        self._update_alpha_mask()
+        if self._click_in_model:
+            return
+        self._frame_count += 1
+        if self._frame_count % 60 == 0 or getattr(self, '_region_dirty', False):
+            self._update_alpha_mask()
 
     def timerEvent(self, _: QTimerEvent | None) -> None:
         self.update()
@@ -160,13 +165,12 @@ class Live2DWidget(QOpenGLWidget):
         ph = int(wy * ratio)
         if pw < 0 or ph < 0 or pw >= self._fw or ph >= self._fh:
             return False
-        # OpenGL 原点在左下角，翻转 Y
         gl_y = self._fh - ph - 1
-        idx = (gl_y * self._fw + pw) * 4 + 3  # alpha 字节偏移
+        idx = (gl_y * self._fw + pw) * 4 + 3
         return self._alpha_rgba[idx] > 10
 
     def _update_window_region(self) -> None:
-        """从 alpha 掩码构建窗口区域，实现像素级鼠标穿透。"""
+        """从 alpha 掩码构建窗口区域，SCALE=3 平衡精度与性能。"""
         if not self._alpha_rgba:
             return
 
@@ -174,7 +178,7 @@ class Live2DWidget(QOpenGLWidget):
         gdi32 = ctypes.windll.gdi32
         hwnd = int(self.winId())
 
-        SCALE = 4
+        SCALE = 3
         fw = self._fw
         fh = self._fh
         sw = fw // SCALE
@@ -188,23 +192,21 @@ class Live2DWidget(QOpenGLWidget):
         for r in range(sh):
             col = 0
             while col < sw:
-                # 跳过透明像素
                 while col < sw:
                     gl_x = col * SCALE
                     gl_y = fh - 1 - r * SCALE
                     idx = (gl_y * fw + gl_x) * 4 + 3
-                    if self._alpha_rgba[idx] > 10:
+                    if self._alpha_rgba[idx] > 3:
                         break
                     col += 1
                 if col >= sw:
                     break
                 start = col
-                # 找到不透明段末尾
                 while col < sw:
                     gl_x = col * SCALE
                     gl_y = fh - 1 - r * SCALE
                     idx = (gl_y * fw + gl_x) * 4 + 3
-                    if self._alpha_rgba[idx] <= 10:
+                    if self._alpha_rgba[idx] <= 3:
                         break
                     col += 1
                 end = col
@@ -229,6 +231,7 @@ class Live2DWidget(QOpenGLWidget):
             self._click_in_model = True
             self._click_x = x
             self._click_y = y
+            ctypes.windll.user32.SetWindowRgn(int(self.winId()), 0, True)
         else:
             self._click_in_model = False
         super().mousePressEvent(event)
@@ -248,6 +251,8 @@ class Live2DWidget(QOpenGLWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._click_in_model:
+            self._region_dirty = True
         self._click_in_model = False
         super().mouseReleaseEvent(event)
 

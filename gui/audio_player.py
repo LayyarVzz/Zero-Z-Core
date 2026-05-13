@@ -64,6 +64,7 @@ class AudioPlayer(QObject):
 
         if self._sink.state() != QtAudio.State.ActiveState:
             self._sink.start(self._buf)
+            self.playback_started.emit()
 
         self.set_mouth_from_audio(pcm)
 
