@@ -78,6 +78,9 @@ class AppController:
         )
         player.mouth_open_changed.connect(window.set_mouth_open)
 
+        player.playback_started.connect(
+            lambda: self.orch.state_queue.put(State.SPEAKING)
+        )
         player.playback_finished.connect(lambda: window.set_mouth_open(0.0))
 
     def cleanup(self) -> None:
