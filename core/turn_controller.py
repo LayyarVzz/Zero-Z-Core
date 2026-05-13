@@ -1,6 +1,6 @@
 """TurnController — 一轮对话的生命周期控制策略。
 
-从 Orchestrator 中抽离打断 / 非打断两种交互模式，各自内聚在子类中。
+从 Pipeline 中抽离打断 / 非打断两种交互模式，各自内聚在子类中。
 """
 
 import threading
@@ -35,7 +35,7 @@ class TurnController(ABC):
 
     @abstractmethod
     def shutdown(self) -> None:
-        """Orchestrator.stop() 调用此方法以解除 dispatch 循环的阻塞。"""
+        """Pipeline.stop() 调用此方法以解除 dispatch 循环的阻塞。"""
         ...
 
 
