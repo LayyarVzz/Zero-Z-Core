@@ -83,8 +83,8 @@ class TTSEngine:
                     audio = self.provider.synthesize(text)
                     self.audio_out_queue.put((self._gen_id, (text, audio)))
                     self.audio_out_queue.put(PLAYBACK_DONE)
-            except Exception as e:
-                print(f"[TTSEngine] TTS failed: {e}")
+            except Exception:
+                print(f"[TTSEngine] TTS failed: TTS服务未启动或无法连接")
                 self.audio_out_queue.put(PLAYBACK_DONE)
 
     def cancel(self) -> None:

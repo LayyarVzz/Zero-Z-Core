@@ -1,14 +1,37 @@
 """Live2D 渲染窗口 — QOpenGLWidget 直接作为桌面宠物悬浮窗。"""
 
+import ctypes
 import os
+from ctypes import wintypes
 
 import OpenGL.GL as gl
+
+# 必须在 import live2d.v3 之前打补丁，否则 live2d 内部已缓存原始 Info
+import live2d.utils.log as live2d_log
+live2d_log.Info = lambda *args, **kwargs: None
+
 import live2d.v3 as live2d
-from PySide6.QtCore import QTimerEvent, Qt
+from PySide6.QtCore import QTimerEvent, Qt, QPoint
 from PySide6.QtGui import QMouseEvent, QSurfaceFormat, QGuiApplication
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 live2d.init()
+
+# ── Windows 鼠标穿透常量 ──────────────────────────────────
+WM_NCHITTEST = 0x0084
+HTTRANSPARENT = -1
+HTCAPTION = 2
+
+
+class _MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt", wintypes.POINT),
+    ]
 
 
 class Live2DWidget(QOpenGLWidget):
@@ -47,7 +70,6 @@ class Live2DWidget(QOpenGLWidget):
         if not os.path.exists(self._model_path):
             raise FileNotFoundError(f"Live2D 模型文件不存在: {self._model_path}")
 
-        # 吞掉 live2d-py C 扩展 printf 噪音，仅保留模型名称
         _saved = os.dup(1)
         _null = os.open(os.devnull, os.O_WRONLY)
         os.dup2(_null, 1)
@@ -83,6 +105,23 @@ class Live2DWidget(QOpenGLWidget):
 
     def timerEvent(self, _: QTimerEvent | None) -> None:
         self.update()
+
+    # ── 鼠标穿透 ──────────────────────────────────────────
+
+    def nativeEvent(self, eventType, message) -> tuple[bool, int]:
+        if eventType == b"windows_generic_MSG" and message:
+            msg = ctypes.cast(message, ctypes.POINTER(_MSG)).contents
+            if msg.message == WM_NCHITTEST:
+                pt_x = msg.lParam & 0xFFFF
+                pt_y = (msg.lParam >> 16) & 0xFFFF
+                widget_pt = self.mapFromGlobal(QPoint(pt_x, pt_y))
+                opaque = self._is_pixel_opaque(widget_pt.x(), widget_pt.y())
+                print(f"[NCHITTEST] ({pt_x},{pt_y}) opaque={opaque}")
+                if opaque:
+                    return True, HTCAPTION
+                else:
+                    return True, HTTRANSPARENT
+        return False, 0
 
     # ── 像素检测 ──────────────────────────────────────────
 

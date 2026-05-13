@@ -1,6 +1,6 @@
 """StateBridge — 管道线程队列 → GUI 主线程 Qt 信号桥接。
 
-用 QTimer 轮询 Orchestrator 的各输出队列，发现新数据即发射信号。
+用 QTimer 轮询 Pipeline 的各输出队列，发现新数据即发射信号。
 Qt 信号跨线程安全：emit 在 StateBridge 所在线程（即主线程）的 event loop 中触发。
 """
 

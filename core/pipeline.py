@@ -14,7 +14,7 @@ from llm.client import LLMClient
 from tts.engine import TTSEngine
 
 
-class Orchestrator:
+class Pipeline:
     """Pipeline 总控制器，负责：构建模块 -> 启动 -> 协调 -> 停止。"""
 
     def __init__(self) -> None:
@@ -102,14 +102,15 @@ class Orchestrator:
         if greeting:
             self.dialogue.add_assistant(greeting)
             self.display_queue.put(("ai", greeting))
+            print(f"[LLM] {greeting}")
             self._put_tts(greeting)
 
-        print("[Orchestrator] All modules started")
+        print("[Pipeline] All modules started")
 
     def stop(self) -> None:
         if not self._running:
             return
-        print("[Orchestrator] Stopping...")
+        print("[Pipeline] Stopping...")
         self._running = False
 
         self.asr.stop()
@@ -130,7 +131,7 @@ class Orchestrator:
         if self._dispatch_thread is not None:
             self._dispatch_thread.join(timeout=3.0)
 
-        print("[Orchestrator] Stopped")
+        print("[Pipeline] Stopped")
 
     def cancel_current_turn(self) -> None:
         """打断当前回合：递增 gen_id，取消 LLM 和 TTS，清空输出队列。"""
@@ -200,7 +201,7 @@ class Orchestrator:
         try:
             self.tts_queue.put(text, timeout=5.0)
         except queue.Full:
-            print("[Orchestrator] TTS queue full, dropping utterance")
+            print("[Pipeline] TTS queue full, dropping utterance")
 
     def _drain_audio_out_queue(self) -> None:
         while True:
