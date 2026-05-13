@@ -52,7 +52,7 @@ character:
     max_entries: 100
 
 gui:
-  model_path: "data/models/hiyori/Hiyori.model3.json"
+  model_name: "hiyori"              # Live2D 模型名，对应 data/models/{model_name}/ 目录
   width: 400
   height: 600
   always_on_top: true

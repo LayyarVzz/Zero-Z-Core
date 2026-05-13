@@ -37,8 +37,15 @@ class AppController:
 
         print(f"[Zero-Z] 启动完成 (角色: {config['character']['name']})")
 
+        model_path = gui_cfg.get("model_path", "")
+        if not model_path and "model_name" in gui_cfg:
+            import glob
+            candidates = glob.glob(f"data/models/{gui_cfg['model_name']}/*.model3.json")
+            if candidates:
+                model_path = candidates[0]
+
         self.window = Live2DWidget(
-            model_path=gui_cfg.get("model_path", ""),
+            model_path=model_path,
             width=gui_cfg.get("width", 400),
             height=gui_cfg.get("height", 600),
         )

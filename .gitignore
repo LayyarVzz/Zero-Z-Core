@@ -12,3 +12,11 @@ wheels/
 # Environment / local config
 .env
 data/config.yaml
+
+# Live2D 模型文件
+data/models/**
+
+# 角色卡
+data/characters/**
+!data/characters/sample/
+!data/characters/sample/**
